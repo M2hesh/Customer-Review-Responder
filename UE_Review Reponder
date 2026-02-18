@@ -1,0 +1,426 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import random
+import nltk
+import pandas as pd
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+plt.style.use('ggplot')
+nltk.download('vader_lexicon')
+
+try:
+    Order = pd.read_csv('/Orders.csv')
+except pd.errors.ParserError as e:
+    print(f"Error reading CSV: {e}")
+    Order = pd.read_csv('/Orders.csv', error_bad_lines=False)
+
+try:
+    O= pd.read_csv('/O.csv')
+except pd.errors.ParserError as e:
+    print(f"Error reading CSV: {e}")
+    O = pd.read_csv('/O.csv', error_bad_lines=False)
+
+try:
+    df_Item= pd.read_csv('/Item.csv')
+except pd.errors.ParserError as e:
+    print(f"Error reading CSV: {e}")
+    df_Item= pd.read_csv('/Item.csv', error_bad_lines=False)
+
+# Read in data
+df1 = pd.read_csv('/Train.csv')
+df1= df1[df1['Rating Type']== 'consumer_to_merchant']
+df1.insert(0, 'ID', range(1, len(df1) + 1))
+df1 = df1.set_index('ID').reset_index()
+df_Item= df_Item.rename(columns={'Rating Tags': 'Rating Tags1'})
+
+df1.columns
+
+df1.rename(columns = {'Order UUID':'order_uuid'}, inplace = True)
+df1.info()
+
+df_Item= df_Item.rename(columns={'Rating Tags': 'Rating Tags1'})
+df_Item = df_Item[['Order UUID','Rating Tags1']]
+df_Item['Rating Tags1'] = df_Item['Rating Tags1'].astype(str)
+
+# Split concatenated tags and remove 'NaN' values
+df_Item['Rating Tags1'] = df_Item['Rating Tags1'].str.split(', ').apply(lambda x: ', '.join(filter(None, x)))
+
+# Drop duplicate rows based on 'Order UUID'
+df_Item = df_Item.drop_duplicates(subset=['Order UUID'])
+
+# Reset index
+df_Item = df_Item.reset_index(drop=True)
+
+Order= Order[['Order UUID','Workflow UUID']]
+Order.rename(columns = {'Order UUID':'order_uuid'}, inplace = True)
+Order.rename(columns = {'Workflow UUID':'workflow_id'}, inplace = True)
+
+df1 = df1.merge(Order, on='order_uuid', how='left')
+df1.info()
+
+df_Item= df_Item[['Order UUID','Rating Tags1']]
+df_Item.rename(columns = {'Order UUID':'order_uuid'}, inplace = True)
+df_Item.head()
+
+df1 = df1.merge(df_Item, on='order_uuid', how='left')
+O.info()
+
+O= O[['store','brand_name','location_name','store_uuid']]
+O.rename(columns = {'store':'Store'}, inplace = True)
+O = O.drop_duplicates(subset='Store')
+
+df1 = df1.merge(O, on='Store', how='left')
+df1 = df1.drop_duplicates(subset='Order ID')
+df1.head()
+
+df1.loc[df1['Store'] == "Wendy's - Willesden ", ['brand_name', 'location_name','store_uuid']] = ["Wendy's", "LDN-145-BK01",'911478d4-2d57-5d23-b2a5-cfa4a758f819']
+df1.loc[df1['Store'] == "Burgermeister Steglitz", ['brand_name', 'location_name']] = ["Bürgermeister", "BER-004-BK01"]
+df1.loc[df1['Store'] == " TGI Fridays (1941 Yonge St)", ['brand_name', 'location_name','store_uuid']] = ["TGI Fridays", "TOR-018-EK02",'452db0f0-b1a8-5910-b9f7-bc6e5b8ba8cc']
+df1.loc[df1['Store'] == "Wow Bao (PHX22-1)", ['brand_name', 'location_name','store_uuid']] = ["Wow Bao", "PHX-022-EK01","0d161870-1263-5faf-8d05-8d6251881820"]
+
+df1['Comments'] = pd.concat([df1['Rating Tags'], df1['Comment'], df1['Rating Tags1']], axis=1).apply(lambda x: ','.join(x.dropna().astype(str)), axis=1)
+df1 = df1[['ID','External Store ID','Order ID','Store','brand_name','location_name','store_uuid','Rating Date', 'order_uuid','workflow_id','Rating Value', 'Rating Type', 'Rating Tags', 'Comment','Comments',]]
+df1= df1[df1['Rating Type']== 'consumer_to_merchant']
+
+df3 = df1[df1['Comments'].apply(lambda x: isinstance(x, str) and len(x.strip()) <= 0)]
+
+def set_tone(value):
+    if value == 5 or value == 4:
+        return 'Positive'
+    elif value == 3:
+        return 'Neutral'
+    else:
+        return 'Negative'
+
+df3['Tone'] = df3['Rating Value'].apply(set_tone)
+
+df3['Discount'] = '$0'
+df3['roberta_sum'] = 0
+
+def map_ratings_to_stars(rating):
+    if rating == 1:
+        return '1-star'
+    elif rating == 2:
+        return '2-star'
+    elif rating == 3:
+        return '3-star'
+    elif rating == 4:
+        return '4-star'
+    elif rating == 5:
+        return '5-star'
+    else:
+        return None
+
+df3['category'] = df3['Rating Value'].apply(map_ratings_to_stars)
+
+df3.head()
+
+import random
+
+responses = {
+   1: ["We're sorry we let you down. Your feedback matters, and we'll make things right. We hope to serve you again and deliver the experience you deserve.","We apologize for letting you down. Your feedback is important and we'll work hard to make it right. We look forward to serving you again with excellence.","Sorry we didn't meet your expectations. Your feedback is valuable and we'll make it right. We're eager to serve you again and exceed your expectations.","We regret disappointing you. Your feedback is significant and we'll fix things. We're excited to serve you again and provide the experience you deserve.","We apologize for falling short. Your feedback matters and we'll make things right. We're eager to serve you again and provide an excellent experience."],
+   2: ["We apologize for not meeting your food expectations. Your feedback is valued and we'll use it to improve. Thank you for bringing this to our attention.","We're sorry for failing to meet your food expectations. Your feedback matters and we'll use it to improve. Thank you for letting us know.","We apologize for not meeting your expectations with our food. Your feedback is valuable and we'll use it to improve. Thank you for bringing this to our attention.","We regret not meeting your food expectations. Your feedback is important and we'll use it to improve. Thank you for letting us know.","Sorry we didn't meet your food expectations. Your feedback matters and we'll use it to improve. Thank you for bringing this to our attention."],
+   3: ["Sorry we didn't meet your food expectations. Your ratings matter and we'll use it to improve our food. Thanks for your feedback.","We apologize for not meeting your food expectations. Your ratings are important and we'll use them to make improvements. Thanks for your feedback.","We regret not meeting your food expectations. Your ratings matter and we'll use them to make necessary improvements. Thanks for your feedback.","We're sorry we didn't meet your food expectations. Your ratings are significant and we'll use them to improve our food. Thanks for your feedback.","We apologize for not meeting your food expectations. Your ratings are valuable and we'll use them to improve. Thanks for your feedback."],
+   4: ["Thank you for sharing your positive experience with us. Your feedback helps us improve our food offerings.","We're grateful for your positive feedback. It motivates us to improve our food offerings. Thank you.","Thank you for sharing your great experience with us. Your feedback is valuable and will help us provide better food.","We appreciate your positive feedback. It helps us improve our food offerings. Thank you for choosing us!","Thanks for sharing your positive experience with us. Your feedback is important and will help us provide excellent food."],
+   5: ["We're thrilled to have met or exceeded your expectations! Thank you for your positive feedback, which encourages us to maintain our food quality.","Thanks for your positive feedback! We're excited that we met or exceeded your expectations and will keep working hard to do so in the future.","Your positive feedback means a lot to us. We're thrilled to have met or exceeded your expectations and will continue to provide the same level of food quality.","Thank you for your positive feedback! It's rewarding to know we met or exceeded your expectations. We'll strive to maintain this level of food quality in the future.","We're grateful for your positive feedback! It's great to know we met or exceeded your expectations. We'll work hard to provide the same level of food quality in the future."]
+}
+
+for index, row in df3.iterrows():
+    rating = row['Rating Value']
+    if rating == 1:
+        response = random.choice(responses[1])
+    elif rating == 2:
+        response = random.choice(responses[2])
+    elif rating == 3:
+        response = random.choice(responses[3])
+    elif rating == 4:
+        response = random.choice(responses[4])
+    else:
+        response = random.choice(responses[5])
+    df3.loc[index, 'Response'] = response[:200]
+
+df3.head()
+
+df2 = df1[df1['Comments'].apply(lambda x: isinstance(x, str) and len(x.strip()) > 0)]
+
+from nltk.sentiment import SentimentIntensityAnalyzer
+from tqdm.notebook import tqdm
+
+sia = SentimentIntensityAnalyzer()
+
+res = {}
+for i, row in tqdm(df2.iterrows(), total=len(df2)):
+    text = row['Comments']
+    myid = row['ID']
+    res[myid] = sia.polarity_scores(text)
+
+vaders = pd.DataFrame(res).T
+vaders = vaders.reset_index().rename(columns={'index': 'ID'})
+vaders = vaders.merge(df2, how='left')
+
+vaders.tail()
+
+ax = sns.barplot(data=vaders, x='Rating Value', y='compound')
+ax.set_title('Compund Score by Rating')
+plt.show()
+
+fig, axs = plt.subplots(1, 3, figsize=(12, 3))
+sns.barplot(data=vaders, x='Rating Value', y='pos', ax=axs[0])
+sns.barplot(data=vaders, x='Rating Value', y='neu', ax=axs[1])
+sns.barplot(data=vaders, x='Rating Value', y='neg', ax=axs[2])
+axs[0].set_title('Positive')
+axs[1].set_title('Neutral')
+axs[2].set_title('Negative')
+plt.tight_layout()
+plt.show()
+
+from transformers import AutoTokenizer
+from transformers import AutoModelForSequenceClassification
+from scipy.special import softmax
+
+MODEL = f"cardiffnlp/twitter-roberta-base-sentiment"
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL)
+
+example ="Ordered 2 burgers and a large fries. BurgerFi DID NOT PUT MY FRIES IN THE BAG!!! EXTREMELY DISAPPOINTED!!! Driver was very nice. It was not her fault. I will not order from BurgerFi again. There was also no phone number for the location that the food came from and I couldn’t find BurgerFi at the address that was listed. Very upsetting not to be able to reach those responsible for this mistake."
+print(example)
+
+# Run for Roberta Model
+encoded_text = tokenizer(example, return_tensors='pt')
+output = model(**encoded_text)
+scores = output[0][0].detach().numpy()
+scores = softmax(scores)
+scores_dict = {
+    'roberta_neg' : scores[0],
+    'roberta_neu' : scores[1],
+    'roberta_pos' : scores[2]
+}
+print(scores_dict)
+
+def polarity_scores_roberta(example):
+    encoded_text = tokenizer(example, return_tensors='pt')
+    output = model(**encoded_text)
+    scores = output[0][0].detach().numpy()
+    scores = softmax(scores)
+    scores_dict = {
+        'roberta_neg' : scores[0],
+        'roberta_neu' : scores[1],
+        'roberta_pos' : scores[2]
+    }
+    return scores_dict
+
+res = {}
+for i, row in tqdm(df2.iterrows(), total=len(df2)):
+    try:
+        text = row['Comments']
+        myid = row['ID']
+        vader_result = sia.polarity_scores(text)
+        vader_result_rename = {}
+        for key, value in vader_result.items():
+            vader_result_rename[f"vader_{key}"] = value
+        roberta_result = polarity_scores_roberta(text)
+        both = {**vader_result_rename, **roberta_result}
+        res[myid] = both
+    except RuntimeError:
+        print(f'Broke for id {myid}')
+
+results_df = pd.DataFrame(res).T
+results_df = results_df.reset_index().rename(columns={'index': 'ID'})
+results_df = results_df.merge(df2, how='left')
+
+df1.info()
+
+results_df['roberta_neg'] = results_df['roberta_neg'] * -1
+results_df['roberta_sum'] = results_df['roberta_neg'] + results_df['roberta_neu'] + results_df['roberta_pos']
+results_df = results_df[['External Store ID','Order ID','Store','brand_name','location_name','store_uuid','Rating Date', 'order_uuid','workflow_id','Rating Value','Rating Type', 'Rating Tags', 'Comment','Comments','roberta_sum']]
+df3['Discount'] = 0
+df1 = df1.dropna(subset=['Rating Value'])
+
+responses = {
+   "<-0.70": {
+       1: ["We're sorry to hear that your experience with us was less than satisfactory. We take your feedback seriously and would like to investigate the matter further to understand what went wrong. Please be assured that we will address your concerns with the team and take steps to improve our food experience. We would like to offer you a discount on your next order as a gesture of goodwill, and we hope to have the opportunity to serve you better in the future.", "We're disappointed to hear that we didn't meet your expectations, and we apologize for any inconvenience caused. We appreciate you taking the time to share your feedback with us and will use it to improve our food experience. Please know that we take your concerns seriously and will address them with the team. We would like to offer you a discount on your next order to show our commitment to providing you with a better experience.", "Thank you for bringing this to our attention, and we're sorry to hear that your experience with us was unsatisfactory. We strive to provide the best possible food experience to our customers, and we regret that we fell short of your expectations. We value your feedback and will take steps to improve our food experience. As a token of our appreciation for your feedback, we would like to offer you a discount on your next order.", "We're sorry to hear that your experience with us was disappointing. We take your feedback seriously and will investigate the matter further to understand what went wrong. We appreciate your patience as we work to address the issues you have raised with our team. As a gesture of goodwill, we would like to offer you a discount on your next order. We hope that you will give us another opportunity to serve you better in the future.", "We're sorry to hear that your experience with us fell short of your expectations, and we apologize for any inconvenience caused. We appreciate you bringing this to our attention and will take steps to ensure that similar issues do not occur in the future. We value your feedback and would like to offer you a discount on your next order as a token of our appreciation. We hope that you will give us another chance to provide you with a better experience."],
+       2: ["Thank you for your feedback, and we're sorry to hear that your experience with us was not up to our usual standards. We appreciate you bringing this to our attention and will investigate the matter further. Please know that we take your concerns seriously and will work to address them with the team. As a token of our appreciation for your feedback, we would like to offer you a discount on your next order.", "We're sorry to hear that we didn't meet your expectations, and we apologize for any inconvenience caused. We appreciate your feedback and will take steps to improve our food experience. Please know that we value your feedback and would like to offer you a discount on your next order as a gesture of goodwill. We hope that you will give us another chance to provide you with a better experience.","We're sorry to hear that your experience with us was disappointing. We take your feedback seriously and will work to identify areas where we can improve our food experience. We appreciate your patience as we address the issues you have raised with the team. As a gesture of goodwill, we would like to offer you a discount on your next order. We hope that you will consider giving us another chance to provide you with a better experience.","We're sorry to hear that we fell short of your expectations with your order. Your feedback is important to us, and we appreciate you taking the time to share your experience. We're committed to providing excellent food experience to our customers and will work to ensure that your concerns are addressed. To show our appreciation for your feedback and to make it up to you, we would like to offer you a discount on your next order. We hope you'll give us another chance to provide you with a better experience.", "We're sorry to hear that your experience with us was not up to our usual standards. We strive to provide excellent food experience to our customers, and we're disappointed that we fell short in your case. Your feedback is important to us, and we will use it to improve our food experience. We would like to offer you a discount on your next order as a gesture of goodwill. We hope you'll give us another opportunity to serve you better in the future."],
+       3: ["Thank you for taking the time to share your feedback with us. We're sorry to hear that your experience with us fell short of your expectations. We take all feedback seriously and will use it to improve our food experience. To show our appreciation for your feedback, we would like to offer you a discount on your next order. We hope you'll consider giving us another chance to exceed your expectations.","We're sorry to hear that your recent experience with us didn't meet your expectations. We appreciate your feedback and will use it to improve our food experience. As a gesture of goodwill, we would like to offer you a discount on your next order. We hope you'll give us another opportunity to provide you with a better experience.","Thank you for your feedback. We're sorry to hear that your experience with us was not up to our usual standards. We take your concerns seriously and will work to improve our food experience. To show our commitment to providing you with a better experience, we would like to offer you a discount on your next order. We hope you'll give us another chance to exceed your expectations.","We apologize for any inconvenience you may have experienced with your order. We appreciate your feedback and will use it to improve our food experience. As a token of our appreciation for your feedback, we would like to offer you a discount on your next order. We hope you'll consider giving us another chance to provide you with a better experience.","Thank you for your honest feedback. We're sorry to hear that your experience with us was not what you expected. We take all feedback seriously and will use it to improve our food experience. To show our commitment to providing you with a better experience, we would like to offer you a discount on your next order. We hope you'll give us another chance to exceed your expectations."],
+       4: ["Thank you for your positive review and for choosing us. We're thrilled to hear that you had a great experience with us. While we're happy to see that we met your expectations, we're always looking for ways to improve our food experience. Your feedback is greatly appreciated, and we'll take it into consideration as we continue to provide exceptional food experience to our customers. As a thank you for your support, we'd like to offer you a discount on your next order. We hope to see you again soon!","We're grateful for your feedback and are delighted to hear that you had a positive experience with us. Your comments are valuable, and we'll make sure to pass them along to our team to continue providing great food. As a gesture of our appreciation, we'd like to offer you a discount on your next order. Thank you for choosing us, and we look forward to serving you again soon!","Thank you for taking the time to leave a review. We're thrilled to hear that you had a great experience with us, and we appreciate your feedback on areas where we can improve. We take all feedback seriously and will work to address any concerns you've raised with our team. As a thank you for your support, we'd like to offer you a discount on your next order. We look forward to serving you again and providing you with an even better experience.","We're happy to hear that you enjoyed our food experience and appreciate your feedback on how we can improve. Your comments will help us continue to provide excellent food experience to our customers. As a token of our appreciation, we'd like to offer you a discount on your next order. Thank you for your support, and we hope to see you again soon!","Thank you for choosing us and for taking the time to share your experience. We're pleased to see that you had a positive experience with us. Your feedback is valuable, and we'll use it to improve our food experience even further. As a thank you for your support, we'd like to offer you a discount on your next order. We hope to continue serving you and providing you with excellent food experience."],
+       5: ["We're thrilled to hear that you had a positive experience overall, but we apologize for any inconvenience caused by the issue you encountered. We take all feedback seriously, and we want to make it right. As a token of our appreciation for your feedback, we would like to offer you a discount on your next order. We look forward to serving you again soon and providing you with an even better experience.","We're glad to hear that you enjoyed your experience with us, but we're sorry to hear that there was an issue. We strive to provide the best possible food experience to all of our customers, and we want to make sure that you're completely satisfied. As a gesture of our commitment to quality food experience, we would like to offer you a discount on your next order. We hope to have the opportunity to serve you again soon.","Thank you so much for your positive feedback and for choosing our food experiences. We're thrilled to hear that you had a great experience with us. We strive to provide the best possible food experience to all of our customers and we're glad that we were able to meet your expectations. As a token of our appreciation, we would like to offer you a discount on your next order. We can't wait to serve you again and provide you with another excellent experience.","We're glad to hear that you had a positive experience with us, but we're sorry to hear that there was an issue that detracted from your experience. We take all feedback seriously, and we want to make sure that we address any concerns you may have. To show our commitment to quality food experience, we would like to offer you a discount on your next order. We hope to have the opportunity to serve you again and provide you with an even better experience.","Thank you for taking the time to leave a positive review, and we're sorry to hear that there was an issue with your order. We take all feedback seriously, and we want to make sure that our customers are completely satisfied. As a token of our appreciation for your feedback, we would like to offer you a discount on your next order. We hope to have the opportunity to provide you with another great experience and address any concerns you may have."]
+   },
+   "(-0.70-0.0)": {
+       1: ["We're sorry to hear that your experience with us was less than satisfactory. We take your feedback seriously and would like to investigate the matter further to understand what went wrong. Please be assured that we will address your concerns with the team and take steps to improve our food experience. We hope to have the opportunity to serve you better in the future.", "We're disappointed to hear that we didn't meet your expectations, and we apologize for any inconvenience caused. We appreciate you taking the time to share your feedback with us and will use it to improve our food experience. Please know that we take your concerns seriously and will address them with the team. We are committed to providing you with a better experience in the future.", "Thank you for bringing this to our attention, and we're sorry to hear that your experience with us was unsatisfactory. We strive to provide the best possible food experience to our customers, and we regret that we fell short of your expectations. We value your feedback and will take steps to improve our food experience. We hope that you will give us another opportunity to serve you better.", "We're sorry to hear that your experience with us was disappointing. We take your feedback seriously and will investigate the matter further to understand what went wrong. We appreciate your patience as we work to address the issues you have raised with our team. We hope that you will give us another opportunity to provide you with a better experience in the future.", "We're sorry to hear that your experience with us fell short of your expectations, and we apologize for any inconvenience caused. We appreciate you bringing this to our attention and will take steps to ensure that similar issues do not occur in the future. We value your feedback and are committed to providing you with a better experience in the future."],
+       2: ["Thank you for your feedback, and we're sorry to hear that your experience with us was not up to our usual standards. We appreciate you bringing this to our attention and will investigate the matter further. Please know that we take your concerns seriously and will work to address them with the team. We value us and hope to have the opportunity to serve you again in the future with a better experience.", "We're sorry to hear that we didn't meet your expectations, and we apologize for any inconvenience caused. We appreciate your feedback and will take steps to improve our food experience. Please know that we value your feedback and hope that you will give us another chance to provide you with a better experience in the future.", "We're sorry to hear that your experience with us was disappointing. We take your feedback seriously and will work to identify areas where we can improve our food experience. We appreciate your patience as we address the issues you have raised with the team. We value your feedback and hope to have the opportunity to serve you again in the future with a better experience.", "We're sorry to hear that we fell short of your expectations with your order. Your feedback is important to us, and we appreciate you taking the time to share your experience. We're committed to providing excellent food experience to our customers and will work to ensure that your concerns are addressed. We hope that you will give us another chance to provide you with a better experience in the future.", "We're sorry to hear that your experience with us was not up to our usual standards. We strive to provide excellent food experience to our customers, and we're disappointed that we fell short in your case. Your feedback is important to us, and we will use it to improve our food experience. We hope you'll give us another opportunity to serve you better in the future."],
+       3: ["Thank you for taking the time to share your feedback with us. We're sorry to hear that we fell short of your expectations. We take all feedback seriously and will use it to improve our food experience. We hope you'll consider giving us another chance to provide you with a better experience.","We appreciate your feedback and apologize that your recent experience with us didn't meet your expectations. We are committed to improving our food experience and will take your concerns into consideration. We hope you'll give us another opportunity to exceed your expectations.","Thank you for bringing your concerns to our attention. We are sorry to hear that we did not meet our usual standards. We take all feedback seriously and will work to improve our food experience. We hope you'll give us another chance to provide you with a better experience.","We apologize for any inconvenience you may have experienced with your Order. Your feedback is important to us and we will use it to improve our food experience. We hope you'll give us another opportunity to exceed your expectations.","Thank you for your honest feedback. We're sorry to hear that your experience with us was not what you expected. We take all feedback seriously and will use it to improve our food experience. We hope you'll give us another chance to provide you with a better experience."],
+       4: ["Thank you for taking the time to share your feedback with us. We're sorry to hear that your experience with us fell short of your expectations. We take all feedback seriously and will use it to improve our food experience. To show our commitment to providing our customers with a better experience, we'll be looking into the issue you've raised and working to address it. We hope you'll consider giving us another chance to exceed your expectations.","We're sorry to hear that your recent experience with us didn't meet your expectations. We appreciate your feedback and take all concerns seriously. We're committed to improving our food experience and will be reviewing your feedback to identify areas where we can make improvements. Thank you for bringing this to our attention, and we hope to have the opportunity to serve you better in the future.","Thank you for your feedback. We're sorry to hear that your experience with us was not up to our usual standards. We take your concerns seriously and will work to improve our food experience. We appreciate the opportunity to learn and grow, and we hope to have the chance to exceed your expectations in the future.","We apologize for any inconvenience you may have experienced with your order. We appreciate your feedback and take all concerns seriously. We'll be reviewing your feedback to identify areas where we can make improvements to our food experience. Thank you for bringing this to our attention, and we hope to have the opportunity to serve you better in the future.","Thank you for your honest feedback. We're sorry to hear that your experience with us was not what you expected. We take all feedback seriously and will work to improve our food experience. We appreciate the opportunity to learn and grow, and we hope to have the chance to exceed your expectations in the future."],
+       5: ["Thank you for your feedback. We're glad to hear that you had a positive experience with us, and we appreciate your suggestions for improvement. We will take them into consideration as we continue to provide excellent food experience to our customers. Thank you for choosing us, and we look forward to serving you again soon.","We're sorry to hear that your experience with us was not up to your expectations. We take all feedback seriously, and we want to ensure that our customers receive the best possible food experience. We will review your comments with our team to identify areas for improvement. Thank you for bringing this to our attention, and we hope to have the opportunity to serve you again and exceed your expectations.","Thank you for taking the time to share your experience with us. We're glad to hear that you enjoyed our food experience, and we appreciate your feedback on areas where we can improve. We take all feedback seriously, and we will work to address any concerns you've raised with our team. Thank you for choosing us, and we hope to see you again soon.","We're happy to hear that you enjoyed our food experience and appreciate your feedback on how we can improve. Your comments will help us continue to provide excellent food experience to our customers. Thank you for your support, and we hope to see you again soon!","We're glad to hear that you had a positive experience with us overall, but we apologize for any inconvenience caused by the issue you encountered. We take all feedback seriously, and we want to make sure that we address any concerns you may have. Thank you for bringing this to our attention, and we hope to have the opportunity to serve you again and provide you with an even better experience."]
+   },
+    "(0.0-0.5)": {
+       1: ["We are truly sorry to hear that your recent food order did not meet your expectations. We understand how frustrating that can be, and we want to make it right. Please reach out to us so we can learn more about your experience and work to address any issues. Thank you for bringing this to our attention.","We apologize for the poor experience you had with your recent food order. We strive to provide the best possible  food experience to our customers, and it's clear that we fell short in this instance. We appreciate your feedback and will take it into consideration as we work to improve our food experience.","We're sorry to hear that your recent food order was not up to par. We take your feedback seriously and will use it to improve our food experience going forward. Thank you for bringing this to our attention and giving us the opportunity to make things right.","We are disappointed to hear that your recent food order did not meet your expectations. We take pride in our food and service, and we apologize for falling short in your case. Please reach out to us so we can learn more about your experience and work to address any issues.","We apologize for the negative experience you had with your recent food order. We value your feedback and will use it to improve our service. Thank you for giving us the opportunity to make things right."],
+       2: ["We apologize that your recent food order did not meet your expectations. We appreciate your feedback and will take it into consideration as we work to improve our food. If you have any additional feedback or concerns, please don't hesitate to reach out to us.","We're sorry to hear that your recent food order was not up to our usual standards. We take our food quality and experience very seriously, and we apologize for falling short in your case. Please know that we will do everything we can to improve and provide you with a better experience in the future.","We apologize for any inconvenience caused by your recent food order. We appreciate your feedback and will use it to improve our food experience. We hope to have the opportunity to serve you again and provide you with a better experience.","We're sorry to hear that your recent food order did not meet your expectations. We take your feedback seriously and will use it to improve our service going forward. If there's anything else we can do to address your concerns, please let us know.","We apologize that your recent food order fell short of your expectations. We appreciate your feedback and will work to improve the areas that need attention. Thank you for bringing this to our attention, and we hope to have the opportunity to serve you again in the future."],
+       3: ["Thank you for taking the time to share your feedback with us. We're sorry to hear that your recent food order didn't meet your expectations. We appreciate your feedback and will use it to improve our food experience. We hope to have the opportunity to serve you again and provide you with a better experience.","We're sorry to hear that your recent food order was not up to our usual standards. We take your feedback seriously and will work to address the areas that need attention. Thank you for bringing this to our attention, and we hope to have the opportunity to serve you again in the future.","We apologize that your recent food order fell short of your expectations. We appreciate your feedback and will use it to improve our food experience. We hope to have the chance to serve you again and provide you with a better experience.","We're sorry that your recent food order didn't meet your expectations. We take all feedback seriously and will use it to improve our service. Thank you for taking the time to share your thoughts with us, and we hope to have the opportunity to serve you again in the future.","We apologize that your recent food order wasn't the best experience. We appreciate your feedback and will work to make improvements to our service. We hope to have the chance to serve you again and provide you with a better experience."],
+       4: ["Thank you for taking the time to leave your feedback about your recent food order. We're glad to hear that you had a good experience overall, but we are always striving to improve. We appreciate your input and will use it to make sure that we continue to provide excellent  food experience and quality food.","We're pleased to hear that your recent food order was enjoyable, but we understand that there may be areas where we can still improve. Thank you for sharing your feedback with us, and we will use it to continue to provide excellent food experience to our customers.","We're happy to hear that your recent food order was mostly enjoyable. We appreciate your feedback and will use it to make improvements where necessary. Thank you for choosing us, and we hope to have the opportunity to serve you again soon.","Thank you for sharing your thoughts on your recent food order. We're glad to hear that you had a positive experience overall, but we also understand that there may be areas for improvement. We appreciate your feedback and will use it to continue providing great service and delicious food.","We're happy to hear that your recent food order was mostly satisfactory. We take all feedback seriously and will use it to improve our service. Thank you for your input, and we hope to have the opportunity to serve you again in the future."],
+       5: ["Thank you for taking the time to share your positive experience with us. We're thrilled to hear that you enjoyed your recent food order, and we appreciate your kind words. Our team works hard to provide great  food experience and delicious food, and we're glad to see it paid off.","We're so glad to hear that your recent food order exceeded your expectations. Thank you for choosing us, and we appreciate your support. We hope to have the opportunity to serve you again soon.","We're pleased to hear that your recent food order was a success. We take pride in providing high-quality food experience and delicious food to our customers, and we're glad that you enjoyed it. Thank you for your kind words, and we hope to see you again soon.","Thank you for leaving a 5-star rating for your recent food order. We're happy to hear that we were able to provide you with a great experience. We appreciate your feedback and will continue to strive for excellence.","We're delighted to hear that your recent food order met your expectations. We take customer satisfaction seriously and are thrilled that you enjoyed our food and service. Thank you for choosing us, and we look forward to serving you again in the future."]
+   },
+   "(0.5-1.0)": {
+       1: ["We are truly sorry to hear that your recent food order did not meet your expectations. We understand how frustrating that can be, and we want to make it right. Please reach out to us so we can learn more about your experience and work to address any issues. Thank you for bringing this to our attention.","We apologize for the poor experience you had with your recent food order. We strive to provide the best possible food experience to our customers, and it's clear that we fell short in this instance. We appreciate your feedback and will take it into consideration as we work to improve our food experience.","We're sorry to hear that your recent food order was not up to par. We take your feedback seriously and will use it to improve our service going forward. Thank you for bringing this to our attention and giving us the opportunity to make things right.","We are disappointed to hear that your recent food order did not meet your expectations. We take pride in our food and service, and we apologize for falling short in your case. Please reach out to us so we can learn more about your experience and work to address any issues.","We apologize for the negative experience you had with your recent food order. We value your feedback and will use it to improve our service. Thank you for giving us the opportunity to make things right."],
+       2: ["We apologize that your recent food order did not meet your expectations. We appreciate your feedback and will take it into consideration as we work to improve our  food experienc. If you have any additional feedback or concerns, please don't hesitate to reach out to us.","We're sorry to hear that your recent food order was not up to our usual standards. We take our food quality and food experience very seriously, and we apologize for falling short in your case. Please know that we will do everything we can to improve and provide you with a better experience in the future.","We apologize for any inconvenience caused by your recent food order. We appreciate your feedback and will use it to improve our food experience. We hope to have the opportunity to serve you again and provide you with a better experience.","We're sorry to hear that your recent food order did not meet your expectations. We take your feedback seriously and will use it to improve our service going forward. If there's anything else we can do to address your concerns, please let us know.","We apologize that your recent food order fell short of your expectations. We appreciate your feedback and will work to improve the areas that need attention. Thank you for bringing this to our attention, and we hope to have the opportunity to serve you again in the future."],
+       3: ["Thank you for taking the time to share your feedback with us. We're sorry to hear that your recent food order didn't meet your expectations. We appreciate your feedback and will use it to improve our  food experience. We hope to have the opportunity to serve you again and provide you with a better experience.","We're sorry to hear that your recent food order was not up to our usual standards. We take your feedback seriously and will work to address the areas that need attention. Thank you for bringing this to our attention, and we hope to have the opportunity to serve you again in the future.","We apologize that your recent food order fell short of your expectations. We appreciate your feedback and will use it to improve our food experience. We hope to have the chance to serve you again and provide you with a better experience.","We're sorry that your recent food order didn't meet your expectations. We take all feedback seriously and will use it to improve our service. Thank you for taking the time to share your thoughts with us, and we hope to have the opportunity to serve you again in the future.","We apologize that your recent food order wasn't the best experience. We appreciate your feedback and will work to make improvements to our service. We hope to have the chance to serve you again and provide you with a better experience."],
+       4: ["Thank you for taking the time to leave your feedback about your recent food order. We're glad to hear that you had a good experience overall, but we are always striving to improve. We appreciate your input and will use it to make sure that we continue to provide excellent experience and quality food.","We're pleased to hear that your recent food order was enjoyable, but we understand that there may be areas where we can still improve. Thank you for sharing your feedback with us, and we will use it to continue to provide excellent food experience to our customers.","We're happy to hear that your recent food order was mostly enjoyable. We appreciate your feedback and will use it to make improvements where necessary. Thank you for choosing us, and we hope to have the opportunity to serve you again soon.","Thank you for sharing your thoughts on your recent food order. We're glad to hear that you had a positive experience overall, but we also understand that there may be areas for improvement. We appreciate your feedback and will use it to continue providing great service and delicious food.","We're happy to hear that your recent food order was mostly satisfactory. We take all feedback seriously and will use it to improve our service. Thank you for your input, and we hope to have the opportunity to serve you again in the future."],
+       5: ["Thank you for taking the time to share your positive experience with us. We're thrilled to hear that you enjoyed your recent food order, and we appreciate your kind words. Our team works hard to provide great  food experience and delicious food, and we're glad to see it paid off.","We're so glad to hear that your recent food order exceeded your expectations. Thank you for choosing us, and we appreciate your support. We hope to have the opportunity to serve you again soon.","We're pleased to hear that your recent food order was a success. We take pride in providing high-quality food experience and delicious food to our customers, and we're glad that you enjoyed it. Thank you for your kind words, and we hope to see you again soon.","Thank you for leaving a 5-star rating for your recent food order. We're happy to hear that we were able to provide you with a great experience. We appreciate your feedback and will continue to strive for excellence.","We're delighted to hear that your recent food order met your expectations. We take customer satisfaction seriously and are thrilled that you enjoyed our food and service. Thank you for choosing us, and we look forward to serving you again in the future."]
+   }
+}
+
+
+# Take input frome a dataframe that contains the sentiment scores and ratings
+for index, row in results_df.iterrows():
+    # Determine the sentiment score category based on the sentiment score value
+    sentiment_category = ""
+    if row["roberta_sum"] < -0.70:
+        sentiment_category = "<-0.70"
+    elif -0.75 <= row["roberta_sum"] < 0.0:
+        sentiment_category = "(-0.70-0.0)"
+    elif 0.0 <= row["roberta_sum"] < 0.5:
+        sentiment_category = "(0.0-0.5)"
+    elif 0.5 <= row["roberta_sum"] <= 1.0:
+        sentiment_category = "(0.5-1.0)"
+
+    # Use the sentiment score category and rating to select a response from the set of responses
+    response = random.choice(responses[sentiment_category][row["Rating Value"]])
+
+    # Add the selected response to the dataframe
+    results_df.at[index, "Response"] = response
+
+results_df['Discount'] = np.where(results_df['roberta_sum'] < -0.70, '$5', '$0')
+results_df.head()
+
+from transformers import pipeline
+
+sent_pipeline = pipeline("sentiment-analysis")
+
+comments = results_df["Comments"].tolist()
+sentiment_scores = []
+sentiment_tones = []
+
+for comment in comments:
+    result = sent_pipeline(comment)
+    score = result[0]["score"]
+    label = result[0]["label"]
+    sentiment_scores.append(score)
+    sentiment_tones.append(label)
+
+# Load the data from the published URL into a pandas DataFrame
+url = 'https://docs.google.com/spreadsheets/d/e/2PACX---7fzErE5J3LGAPzbJ/pub?gid=0&single=true&output=csv'
+df = pd.read_csv(url)
+
+import pandas as pd
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
+
+# Preprocess the data
+vectorizer = CountVectorizer(stop_words='english')
+X = vectorizer.fit_transform(df['Comments'])
+y = df['Category']
+
+# Split the data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split() y, test_size=0.2, random_state=42)
+
+# Train the model
+rf = RandomForestClassifier(n_estimators=100, random_state=42)
+rf.fit(X_train, y_train)
+
+# Evaluate the model on the testing data
+y_pred = rf.predict(X_test)
+accuracy = accuracy_score(y_test, y_pred)
+print("Accuracy:", accuracy)
+
+# Use the trained model to predict categories for new comments
+new_X = vectorizer.transform(results_df['Comments'])
+new_pred = rf.predict(new_X)
+results_df['category'] = new_pred
+
+df1.info()
+
+results_df["Tone"] = sentiment_tones
+results_df = results_df[['External Store ID','Order ID','Store','brand_name','location_name','store_uuid','Rating Date', 'order_uuid','workflow_id', 'Rating Value', 'Rating Type', 'Rating Tags', 'Comment','Comments','roberta_sum','Discount','category','Tone','Response']]
+results_df.head()
+
+results_df.loc[(results_df["roberta_sum"] > 0) & (results_df["category"] == "Positive Experience") & (results_df["Tone"] == "POSITIVE"), "Agent"] = "Stefan"
+results_df.loc[(results_df["roberta_sum"] < 0) & ((results_df["category"] != "Positive Experience") | (results_df["category"] != "Other")) & (results_df["Tone"] == "NEGATIVE"), "Agent"] = "Stefan"
+results_df.loc[(results_df["roberta_sum"] == 0) & (results_df["category"] != "Positive Experience") & (results_df["Agent"].isnull()), "Agent"] = "Stefan"
+
+results_df.head()
+
+df3 = df3[['External Store ID','Order ID','Store','brand_name','location_name','store_uuid','Rating Date', 'order_uuid','workflow_id', 'Rating Value', 'Rating Type', 'Rating Tags', 'Comment','Comments','roberta_sum','Discount','category','Tone','Response']]
+df3["Agent"] = "Stefan"
+df3.head()
+
+df_all= pd.concat([df3,results_df])
+df_all.drop_duplicates(subset='order_uuid', inplace=True)
+df3 = df3[['Order ID','Store','brand_name','location_name','store_uuid','Rating Date', 'order_uuid','workflow_id', 'Rating Value', 'Rating Type', 'Rating Tags', 'Comment','Comments','roberta_sum','Discount','category','Tone','Response']]
+df_all.head()
+
+df_all.to_excel("output_file.xlsx", index=False)
+from google.colab import files
+files.download("output_file.xlsx")
+
+Text= "I regular food from here but this time It was really disappointing"
+rating_value= 1
+
+def predict_category(comment):
+    # Preprocess the comment
+    new_X = vectorizer.transform([comment])
+
+    # Use the trained model to predict the category
+    new_pred = rf.predict(new_X)
+
+    return new_pred[0]
+
+sent_pipeline(Text)
+
+encoded_text = tokenizer(Text, return_tensors='pt')
+output = model(**encoded_text)
+scores = output[0][0].detach().numpy()
+scores = softmax(scores)
+scores_dict = {
+    'roberta_neg' : scores[0],
+    'roberta_neu' : scores[1],
+    'roberta_pos' : scores[2]
+}
+
+Cat = predict_category(Text)
+Tone = sent_pipeline(Text)
+result_dict = {'Category': Cat,
+               'Tone': Tone[0]['label']}
+result_dict.update(scores_dict)
+Output = pd.DataFrame(result_dict, index=[0])
+Output['roberta_neg'] = Output['roberta_neg'] * -1
+Output['Score'] = Output['roberta_neg'] + Output['roberta_neu'] + Output['roberta_pos']
+Output['Discount'] = np.where(Output['Score'] < -0.70, '$5', '$0')
+Output = Output[['Score', 'Category','Tone','Discount']]
+Test_result = Output[['Score', 'Category','Tone','Discount']]
+
+# Take input frome a dataframe that contains the sentiment scores and ratings
+for index, row in Output.iterrows():
+    # Determine the sentiment score category based on the sentiment score value
+    sentiment_category = ""
+    if row["Score"] < -0.70:
+        sentiment_category = "<-0.70"
+    elif -0.75 <= row["Score"] < 0.0:
+        sentiment_category = "(-0.70-0.0)"
+    elif 0.0 <= row["Score"] < 0.5:
+        sentiment_category = "(0.0-0.5)"
+    elif 0.5 <= row["Score"] <= 1.0:
+        sentiment_category = "(0.5-1.0)"
+
+    # Use the sentiment score category and rating to select a response from the set of responses
+    response = random.choice(responses[sentiment_category][rating_value])
+
+    # Add the selected response to the dataframe
+    Output.at[index, "Response"] = response
+
+Test_result = Output[['Discount','Response','Category','Tone']]
+pd.set_option('display.max_colwidth', None)
+display(Test_result)
